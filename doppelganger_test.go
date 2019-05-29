@@ -279,3 +279,29 @@ func TestReaderCloseAfterFactoryClose(t *testing.T) {
 		t.Fatalf("expected no error")
 	}
 }
+
+type eofReader struct{}
+
+func (eofReader) Read(p []byte) (int, error) {
+	copy(p, []byte{1, 2, 3})
+	return 3, io.EOF
+}
+
+func TestFillBufferEOFOnFirstCall(t *testing.T) {
+	factory := NewFactory(eofReader{})
+	defer factory.Close()
+
+	buf1, err := ioutil.ReadAll(factory.NewDoppelganger())
+	if err != nil {
+		t.Fatalf("expected no error")
+	}
+
+	buf2, err := ioutil.ReadAll(factory.NewDoppelganger())
+	if err != nil {
+		t.Fatalf("expected no error")
+	}
+
+	if !bytes.Equal(buf1, buf2) {
+		t.Fatalf("expected %v, but got %v", buf1, buf2)
+	}
+}

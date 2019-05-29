@@ -81,12 +81,16 @@ func (factory *DoppelgangerFactory) read(caller *readerInstance, p []byte) (int,
 		return 0, io.EOF
 	}
 	n, err := factory.source.Read(p)
+
+	if n > 0 {
+		// fill my own Buffer if we have data
+		factory.buffer.Write(p[:n])
+	}
+
 	if err != nil {
 		return n, err
 	}
 
-	// fill my own Buffer
-	factory.buffer.Write(p[:n])
 	for i := len(factory.readers) - 1; i >= 0; i-- {
 		if factory.readers[i] != caller {
 			factory.readers[i].Buffer.Write(p[:n])
