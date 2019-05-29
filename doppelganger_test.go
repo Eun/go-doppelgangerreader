@@ -268,3 +268,14 @@ func TestReadAfterSourceIsClosed(t *testing.T) {
 		t.Fatalf("expected %v, but got %v", []byte("Hello World"), buf)
 	}
 }
+
+func TestReaderCloseAfterFactoryClose(t *testing.T) {
+	factory := NewFactory(bytes.NewReader(nil))
+	reader := factory.NewDoppelganger()
+	if err := factory.Close(); err != nil {
+		t.Fatalf("expected no error")
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("expected no error")
+	}
+}

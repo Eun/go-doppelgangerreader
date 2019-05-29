@@ -56,6 +56,7 @@ func (factory *DoppelgangerFactory) RemoveDoppelganger(r io.ReadCloser) error {
 			return nil
 		}
 	}
+
 	return errors.New("reader not found")
 }
 
@@ -117,5 +118,10 @@ func (r *readerInstance) Read(p []byte) (n int, err error) {
 }
 
 func (r *readerInstance) Close() error {
-	return r.DoppelBase.RemoveDoppelganger(r)
+	// if the factory is already closed
+	// we dont need to remove
+	if r.DoppelBase.closedOn == nil {
+		return r.DoppelBase.RemoveDoppelganger(r)
+	}
+	return nil
 }
