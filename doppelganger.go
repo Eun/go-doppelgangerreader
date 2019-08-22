@@ -80,6 +80,9 @@ func (factory *DoppelgangerFactory) read(caller *readerInstance, p []byte) (int,
 	if factory.closedOn != nil {
 		return 0, io.EOF
 	}
+	if factory.source == nil {
+		return 0, NilReaderError{}
+	}
 	n, err := factory.source.Read(p)
 
 	if n > 0 {
@@ -128,4 +131,17 @@ func (r *readerInstance) Close() error {
 		return r.DoppelBase.RemoveDoppelganger(r)
 	}
 	return nil
+}
+
+// NilReaderError will be reported if the provided reader is nil
+type NilReaderError struct{}
+
+// Error returns the error message
+func (NilReaderError) Error() string {
+	return "Reader to mimic is nil"
+}
+
+func IsNilReaderError(e error) bool {
+	_, ok := e.(NilReaderError)
+	return ok
 }

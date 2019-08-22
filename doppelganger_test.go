@@ -7,6 +7,9 @@ import (
 	"io"
 	"io/ioutil"
 	"math/big"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 )
@@ -293,15 +296,116 @@ func TestFillBufferEOFOnFirstCall(t *testing.T) {
 
 	buf1, err := ioutil.ReadAll(factory.NewDoppelganger())
 	if err != nil {
-		t.Fatalf("expected no error")
+		t.Fatal("expected no error")
 	}
 
 	buf2, err := ioutil.ReadAll(factory.NewDoppelganger())
 	if err != nil {
-		t.Fatalf("expected no error")
+		t.Fatal("expected no error")
 	}
 
 	if !bytes.Equal(buf1, buf2) {
 		t.Fatalf("expected %v, but got %v", buf1, buf2)
+	}
+}
+
+func TestHttpMultipartReader(t *testing.T) {
+	// parts from mime/multipart/writer_test.go (go1.12.5)
+	fileContents := []byte("my file contents")
+
+	m := http.NewServeMux()
+	m.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		factory := NewFactory(request.Body)
+		defer factory.Close()
+
+		request.Body = factory.NewDoppelganger()
+
+		r, err := request.MultipartReader()
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+
+		part, err := r.NextPart()
+		if err != nil {
+			t.Fatalf("part 1: %v", err)
+		}
+		if g, e := part.FormName(), "myfile"; g != e {
+			t.Errorf("part 1: want form name %q, got %q", e, g)
+		}
+		slurp, err := ioutil.ReadAll(part)
+		if err != nil {
+			t.Fatalf("part 1: ReadAll: %v", err)
+		}
+		if e, g := string(fileContents), string(slurp); e != g {
+			t.Errorf("part 1: want contents %q, got %q", e, g)
+		}
+
+		part, err = r.NextPart()
+		if err != nil {
+			t.Fatalf("part 2: %v", err)
+		}
+		if g, e := part.FormName(), "key"; g != e {
+			t.Errorf("part 2: want form name %q, got %q", e, g)
+		}
+		slurp, err = ioutil.ReadAll(part)
+		if err != nil {
+			t.Fatalf("part 2: ReadAll: %v", err)
+		}
+		if e, g := "val", string(slurp); e != g {
+			t.Errorf("part 2: want contents %q, got %q", e, g)
+		}
+
+		part, err = r.NextPart()
+		if part != nil || err == nil {
+			t.Fatalf("expected end of parts; got %v, %v", part, err)
+		}
+	})
+	s := httptest.NewServer(m)
+	defer s.Close()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	{
+		part, err := w.CreateFormFile("myfile", "my-file.txt")
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		part.Write(fileContents)
+		err = w.WriteField("key", "val")
+		if err != nil {
+			t.Fatalf("WriteField: %v", err)
+		}
+		part.Write([]byte("val"))
+		err = w.Close()
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		s := buf.String()
+		if len(s) == 0 {
+			t.Fatal("String: unexpected empty result")
+		}
+		if s[0] == '\r' || s[0] == '\n' {
+			t.Fatal("String: unexpected newline")
+		}
+	}
+
+	_, err := s.Client().Post(s.URL, w.FormDataContentType(), &buf)
+	if err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+}
+
+func TestNilReader(t *testing.T) {
+	factory := NewFactory(nil)
+	defer factory.Close()
+	reader := factory.NewDoppelganger()
+	var buf [8]byte
+	n, err := reader.Read(buf[:])
+	if n != 0 {
+		t.Fatalf("expected 0, but got %d", n)
+	}
+
+	if !IsNilReaderError(err) {
+		t.Fatalf("expected error, but got %v", err)
 	}
 }
