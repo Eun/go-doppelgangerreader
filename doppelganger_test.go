@@ -1,4 +1,4 @@
-package doppelgangerreader
+package doppelgangerreader_test
 
 import (
 	"bytes"
@@ -12,9 +12,11 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/Eun/go-doppelgangerreader"
 )
 
-func ReadAtLeast(t *testing.T, r io.Reader, size int) []byte {
+func readAtLeast(t *testing.T, r io.Reader, size int) []byte {
 	buf := make([]byte, size)
 	n, err := io.ReadAtLeast(r, buf, size)
 	if err != nil {
@@ -23,7 +25,7 @@ func ReadAtLeast(t *testing.T, r io.Reader, size int) []byte {
 	return buf[:n]
 }
 
-func Read(t *testing.T, r io.Reader, size int) []byte {
+func read(t *testing.T, r io.Reader, size int) []byte {
 	buf := make([]byte, size)
 	n, err := r.Read(buf)
 	if err != nil {
@@ -33,16 +35,16 @@ func Read(t *testing.T, r io.Reader, size int) []byte {
 }
 
 func TestDoppelganger(t *testing.T) {
-	reader := NewFactory(rand.Reader)
+	reader := doppelgangerreader.NewFactory(rand.Reader)
 	defer reader.Close()
 
 	reader1 := reader.NewDoppelganger()
 	// read 10
-	buf1 := ReadAtLeast(t, reader1, 10)
+	buf1 := readAtLeast(t, reader1, 10)
 
 	// create a new reader and read 20
 	reader2 := reader.NewDoppelganger()
-	buf2 := ReadAtLeast(t, reader2, 20)
+	buf2 := readAtLeast(t, reader2, 20)
 
 	// the first 10 bytes should be equal
 	if !bytes.Equal(buf1, buf2[:10]) {
@@ -50,29 +52,29 @@ func TestDoppelganger(t *testing.T) {
 	}
 
 	// read more on reader1
-	buf1 = ReadAtLeast(t, reader1, 10)
+	buf1 = readAtLeast(t, reader1, 10)
 	if !bytes.Equal(buf1, buf2[10:]) {
 		t.Fatalf("expected %v, but got %v", buf1, buf2[10:])
 	}
 
 	// read more on reader2
-	buf2 = ReadAtLeast(t, reader2, 10)
-	buf1 = ReadAtLeast(t, reader1, 10)
+	buf2 = readAtLeast(t, reader2, 10)
+	buf1 = readAtLeast(t, reader1, 10)
 	if !bytes.Equal(buf2, buf1) {
 		t.Fatalf("expected %v, but got %v", buf2, buf1)
 	}
 }
 
 func TestReaderInstanceClose(t *testing.T) {
-	reader := NewFactory(rand.Reader)
+	reader := doppelgangerreader.NewFactory(rand.Reader)
 	defer reader.Close()
 
 	reader1 := reader.NewDoppelganger()
 	reader2 := reader.NewDoppelganger()
-	buf1 := ReadAtLeast(t, reader1, 10)
+	buf1 := readAtLeast(t, reader1, 10)
 	reader1.Close()
 
-	buf2 := ReadAtLeast(t, reader2, 10)
+	buf2 := readAtLeast(t, reader2, 10)
 
 	if !bytes.Equal(buf1, buf2) {
 		t.Fatalf("expected %v, but got %v", buf1, buf2)
@@ -111,11 +113,11 @@ func TestCloseAfterFail(t *testing.T) {
 		Reader: rand.Reader,
 	}
 
-	reader := NewFactory(r)
+	reader := doppelgangerreader.NewFactory(r)
 	defer reader.Close()
 
 	reader1 := reader.NewDoppelganger()
-	buf1 := Read(t, reader1, 10)
+	buf1 := read(t, reader1, 10)
 	n, err := reader1.Read(buf1)
 	if err != io.EOF {
 		t.Fatalf("expected io.EOF, but got %T", err)
@@ -126,7 +128,7 @@ func TestCloseAfterFail(t *testing.T) {
 
 	// do it again with another reader, we should expect the same behaviour
 	reader2 := reader.NewDoppelganger()
-	buf2 := Read(t, reader2, 10)
+	buf2 := read(t, reader2, 10)
 	n, err = reader2.Read(buf2)
 	if err != io.EOF {
 		t.Fatalf("expected io.EOF, but got %T", err)
@@ -155,42 +157,42 @@ func (r *dummyReader) Close() error {
 
 func TestCloseOnSource(t *testing.T) {
 	dummy := &dummyReader{}
-	factory := NewFactory(dummy)
+	factory := doppelgangerreader.NewFactory(dummy)
 	if err := factory.Close(); err != nil {
-		t.Fatal("expected no error")
+		t.Fatalf("expected no error, but got %v", err)
 	}
 	if dummy.closed {
-		t.Fatal("expected dummy not to be closed")
+		t.Fatalf("expected dummy not to be closed")
 	}
 }
 
 func TestDoppelganger_RemoveReader(t *testing.T) {
 	t.Run("invalid reader", func(t *testing.T) {
-		reader := NewFactory(rand.Reader)
+		reader := doppelgangerreader.NewFactory(rand.Reader)
 		defer reader.Close()
 
 		if err := reader.RemoveDoppelganger(ioutil.NopCloser(bytes.NewBuffer(nil))); err == nil {
-			t.Fatal("expected error")
+			t.Fatalf("expected error")
 		}
 	})
 
 	t.Run("already removed reader", func(t *testing.T) {
-		reader := NewFactory(rand.Reader)
+		reader := doppelgangerreader.NewFactory(rand.Reader)
 		defer reader.Close()
 
 		r1 := reader.NewDoppelganger()
 		if err := reader.RemoveDoppelganger(r1); err != nil {
-			t.Fatal("expected no error")
+			t.Fatalf("expected no error, but got %v", nil)
 		}
 
 		if err := reader.RemoveDoppelganger(r1); err == nil {
-			t.Fatal("expected error")
+			t.Fatalf("expected error")
 		}
 	})
 }
 
 func TestConcurrent(t *testing.T) {
-	factory := NewFactory(rand.Reader)
+	factory := doppelgangerreader.NewFactory(rand.Reader)
 
 	type Result struct {
 		Data  []byte
@@ -237,7 +239,7 @@ func TestConcurrent(t *testing.T) {
 		a := value.(*Result)
 
 		if a.Error != nil {
-			t.Fatalf("expected no error %v", key)
+			t.Fatalf("expected no error %v, but got %v", key, a.Error)
 		}
 
 		if a.Size != len(a.Data) {
@@ -257,15 +259,20 @@ func TestConcurrent(t *testing.T) {
 }
 
 func TestReadAfterSourceIsClosed(t *testing.T) {
-	factory := NewFactory(bytes.NewReader(nil))
-	factory.buffer.WriteString("Hello World")
-	if err := factory.Close(); err != nil {
-		t.Fatalf("expected no error")
-	}
-	r := factory.NewDoppelganger()
-	buf, err := ioutil.ReadAll(r)
+	factory := doppelgangerreader.NewFactory(bytes.NewBufferString("Hello World"))
+
+	// consume everything
+	_, err := ioutil.ReadAll(factory.NewDoppelganger())
 	if err != nil {
-		t.Fatalf("expected no error")
+		t.Fatalf("expected no error, but got %v", err)
+	}
+
+	if err := factory.Close(); err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+	buf, err := ioutil.ReadAll(factory.NewDoppelganger())
+	if err != nil {
+		t.Fatalf("expected no error, but got %v", err)
 	}
 	if !bytes.Equal([]byte("Hello World"), buf) {
 		t.Fatalf("expected %v, but got %v", []byte("Hello World"), buf)
@@ -273,13 +280,13 @@ func TestReadAfterSourceIsClosed(t *testing.T) {
 }
 
 func TestReaderCloseAfterFactoryClose(t *testing.T) {
-	factory := NewFactory(bytes.NewReader(nil))
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(nil))
 	reader := factory.NewDoppelganger()
 	if err := factory.Close(); err != nil {
-		t.Fatalf("expected no error")
+		t.Fatalf("expected no error, but got %v", err)
 	}
 	if err := reader.Close(); err != nil {
-		t.Fatalf("expected no error")
+		t.Fatalf("expected no error, but got %v", err)
 	}
 }
 
@@ -291,17 +298,17 @@ func (eofReader) Read(p []byte) (int, error) {
 }
 
 func TestFillBufferEOFOnFirstCall(t *testing.T) {
-	factory := NewFactory(eofReader{})
+	factory := doppelgangerreader.NewFactory(eofReader{})
 	defer factory.Close()
 
 	buf1, err := ioutil.ReadAll(factory.NewDoppelganger())
 	if err != nil {
-		t.Fatal("expected no error")
+		t.Fatalf("expected no error, but got %v", err)
 	}
 
 	buf2, err := ioutil.ReadAll(factory.NewDoppelganger())
 	if err != nil {
-		t.Fatal("expected no error")
+		t.Fatalf("expected no error, but got %v", err)
 	}
 
 	if !bytes.Equal(buf1, buf2) {
@@ -315,7 +322,7 @@ func TestHttpMultipartReader(t *testing.T) {
 
 	m := http.NewServeMux()
 	m.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		factory := NewFactory(request.Body)
+		factory := doppelgangerreader.NewFactory(request.Body)
 		defer factory.Close()
 
 		request.Body = factory.NewDoppelganger()
@@ -382,10 +389,10 @@ func TestHttpMultipartReader(t *testing.T) {
 		}
 		s := buf.String()
 		if len(s) == 0 {
-			t.Fatal("String: unexpected empty result")
+			t.Fatalf("String: unexpected empty result")
 		}
 		if s[0] == '\r' || s[0] == '\n' {
-			t.Fatal("String: unexpected newline")
+			t.Fatalf("String: unexpected newline")
 		}
 	}
 
@@ -396,7 +403,7 @@ func TestHttpMultipartReader(t *testing.T) {
 }
 
 func TestNilReader(t *testing.T) {
-	factory := NewFactory(nil)
+	factory := doppelgangerreader.NewFactory(nil)
 	defer factory.Close()
 	reader := factory.NewDoppelganger()
 	var buf [8]byte
@@ -405,10 +412,33 @@ func TestNilReader(t *testing.T) {
 		t.Fatalf("expected 0, but got %d", n)
 	}
 
-	if !IsNilReaderError(err) {
+	if !doppelgangerreader.IsNilReaderError(err) {
 		t.Fatalf("expected error, but got %v", err)
 	}
 	if err.Error() != "Reader to mimic is nil" {
 		t.Fatalf("expected `Reader to mimic is nil' error, got %v", err.Error())
+	}
+}
+
+func TestConsumeSource(t *testing.T) {
+	data := []byte("Hello World")
+	source := bytes.NewBuffer(data)
+	factory := doppelgangerreader.NewFactory(source)
+	defer factory.Close()
+
+	b, err := ioutil.ReadAll(factory.NewDoppelganger())
+	if err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+	if !bytes.Equal(data, b) {
+		t.Fatalf("expected %v, but got %v", data, b)
+	}
+
+	b, err = ioutil.ReadAll(source)
+	if err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+	if !bytes.Equal([]byte{}, b) {
+		t.Fatalf("expected %v, but got %v", []byte{}, b)
 	}
 }
