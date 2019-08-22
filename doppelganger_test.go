@@ -408,4 +408,7 @@ func TestNilReader(t *testing.T) {
 	if !IsNilReaderError(err) {
 		t.Fatalf("expected error, but got %v", err)
 	}
+	if err.Error() != "Reader to mimic is nil" {
+		t.Fatalf("expected `Reader to mimic is nil' error, got %v", err.Error())
+	}
 }
