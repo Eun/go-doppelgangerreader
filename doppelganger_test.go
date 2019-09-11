@@ -442,3 +442,86 @@ func TestConsumeSource(t *testing.T) {
 		t.Fatalf("expected %v, but got %v", []byte{}, b)
 	}
 }
+
+type testErrorHandler struct {
+	Error       interface{}
+	Body        []byte
+	NextHandler http.Handler
+}
+
+func (e *testErrorHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	factory := doppelgangerreader.NewFactory(request.Body)
+	request.Body = factory.NewDoppelganger()
+	defer func() {
+		var err error
+		e.Error = recover()
+		e.Body, err = ioutil.ReadAll(factory.NewDoppelganger())
+		if err != nil {
+			panic(err)
+		}
+		factory.Close()
+	}()
+	e.NextHandler.ServeHTTP(writer, request)
+}
+
+func TestHttpHandlerRecover(t *testing.T) {
+	payload := []byte("Hello World")
+	panicError := "some error"
+	handler := http.NewServeMux()
+	handler.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
+		_, _ = ioutil.ReadAll(request.Body)
+		panic(panicError)
+	})
+
+	errorHandler := &testErrorHandler{
+		NextHandler: handler,
+	}
+	server := httptest.NewServer(errorHandler)
+
+	_, err := http.Post(server.URL, "application/octet-stream", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(payload, errorHandler.Body) {
+		t.Fatalf("expected %v, but got %v", payload, errorHandler.Body)
+	}
+	if panicError != errorHandler.Error {
+		t.Fatalf("expected %v, but got %v", panicError, errorHandler.Error)
+	}
+}
+
+func TestNestedDoppelganger(t *testing.T) {
+	payload := []byte("Hello World")
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(payload))
+	secondFactory := doppelgangerreader.NewFactory(factory.NewDoppelganger())
+	if factory == secondFactory {
+		t.Fatalf("expected not %v, but got %v", factory, secondFactory)
+	}
+
+	// test if we can read from new factory without error
+	b, err := ioutil.ReadAll(io.LimitReader(secondFactory.NewDoppelganger(), 1))
+	if err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+
+	if !bytes.Equal(payload[:1], b) {
+		t.Fatalf("expected %v, but got %v", payload, b)
+	}
+
+	if err := secondFactory.Close(); err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+
+	// test if we can still read from original factory without error
+	b, err = ioutil.ReadAll(factory.NewDoppelganger())
+	if err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+	if !bytes.Equal(payload, b) {
+		t.Fatalf("expected %v, but got %v", payload, b)
+	}
+
+	if err := factory.Close(); err != nil {
+		t.Fatalf("expected no error, but got %v", err)
+	}
+}

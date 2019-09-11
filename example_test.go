@@ -8,6 +8,9 @@ import (
 	"io/ioutil"
 	"net/http"
 
+	"io"
+	"log"
+
 	"github.com/Eun/go-doppelgangerreader"
 )
 
@@ -58,4 +61,30 @@ func ExampleDoppelgangerFactory_NewDoppelganger_httpResponse() {
 		fmt.Printf("Body is a XML Array: %+v", xmlArray)
 		return
 	}
+}
+
+type errorHandler struct {
+	NextHandler http.Handler
+}
+
+func (e errorHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	factory := doppelgangerreader.NewFactory(request.Body)
+	request.Body = factory.NewDoppelganger()
+	defer func() {
+		err := recover()
+		body, _ := ioutil.ReadAll(io.LimitReader(factory.NewDoppelganger(), 128))
+		log.Printf("handler panic: %#v, body was %v", err, body)
+		factory.Close()
+	}()
+	e.NextHandler.ServeHTTP(writer, request)
+}
+
+func ExampleDoppelgangerFactory_httpErrorHandler() {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
+		_, _ = ioutil.ReadAll(request.Body)
+		panic("some random error")
+	})
+
+	http.ListenAndServe(":8000", errorHandler{handler})
 }
