@@ -2,8 +2,10 @@ package doppelgangerreader
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
+	"net/http"
 	"sync"
 )
 
@@ -199,4 +201,48 @@ func (factory *nestedDoppelgangerFactory) Close() error {
 	}
 	factory.readers = nil
 	return nil
+}
+
+// HTTPMiddleware adds a doppelganger factory for the body to the request.
+// At the same time it replaces the original body with a doppelganger reader.
+// You can specify a size limit for the reader (0 disables the limit)
+// The factory can be fetched by using HTTPBodyFactory()
+func HTTPMiddleware(handler http.Handler, limit int64) http.Handler {
+	if handler == nil {
+		panic("handler cannot be nil")
+	}
+	return httpMiddleware{handler, limit}
+}
+
+// HTTPBodyFactory returns a http body factory for a request.
+// Notice that you have to use the HTTPMiddleware function.
+func HTTPBodyFactory(r *http.Request) DoppelgangerFactory {
+	v := r.Context().Value(httpMiddlewareFactoryContextKey)
+	if v == nil {
+		return nil
+	}
+	return v.(DoppelgangerFactory)
+}
+
+type httpMiddlewareFactoryContextType struct{}
+
+var httpMiddlewareFactoryContextKey httpMiddlewareFactoryContextType = struct{}{}
+
+type httpMiddleware struct {
+	nextHandler http.Handler
+	limit       int64
+}
+
+func (h httpMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Body == nil {
+		h.nextHandler.ServeHTTP(w, r)
+		return
+	}
+
+	var body io.Reader = r.Body
+	if h.limit > 0 {
+		body = io.LimitReader(r.Body, h.limit)
+	}
+	factory := NewFactory(body)
+	h.nextHandler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), httpMiddlewareFactoryContextKey, factory)))
 }

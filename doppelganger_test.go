@@ -525,3 +525,34 @@ func TestNestedDoppelganger(t *testing.T) {
 		t.Fatalf("expected no error, but got %v", err)
 	}
 }
+
+func TestHTTPMiddleware(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if doppelgangerreader.HTTPBodyFactory(r) == nil {
+			t.Fatal("no body factory found")
+		}
+		_, _ = w.Write([]byte{'O', 'K'})
+	})
+	srv := httptest.NewServer(doppelgangerreader.HTTPMiddleware(mux, 0))
+	defer srv.Close()
+
+	response, err := srv.Client().Get(srv.URL)
+	if err != nil {
+		t.Fatalf("unable to get response: %v", err)
+	}
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected %v, but got %v", http.StatusOK, response.StatusCode)
+	}
+	defer response.Body.Close()
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("unable to get body: %v", err)
+	}
+
+	if !bytes.Equal(body, []byte{'O', 'K'}) {
+		t.Fatalf("expected %v, but got %v", []byte{'O', 'K'}, body)
+	}
+}
