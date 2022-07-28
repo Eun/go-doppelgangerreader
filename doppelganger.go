@@ -244,5 +244,8 @@ func (h httpMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = io.LimitReader(r.Body, h.limit)
 	}
 	factory := NewFactory(body)
+	r.Body = factory.NewDoppelganger()
 	h.nextHandler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), httpMiddlewareFactoryContextKey, factory)))
+	r.Body.Close()
+	factory.Close()
 }
