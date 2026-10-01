@@ -59,7 +59,7 @@ func (factory *doppelgangerFactory) NewDoppelganger() io.ReadCloser {
 func (factory *doppelgangerFactory) RemoveDoppelganger(r io.ReadCloser) error {
 	instance, ok := r.(*readerInstance)
 	if !ok {
-		return errors.New("not a reader instance")
+		return NotAReaderInstanceError{}
 	}
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
@@ -76,7 +76,7 @@ func (factory *doppelgangerFactory) removeLocked(instance *readerInstance) error
 		}
 	}
 
-	return errors.New("reader not found")
+	return ReaderNotFoundError{}
 }
 
 // Close the DoppelgangerFactory and stops all created Doppelgangers from receiving data
@@ -193,6 +193,54 @@ func (r *readerInstance) Close() error {
 	return nil
 }
 
+// ReaderNotFoundError will be reported if the reader is not (or no longer)
+// registered with the factory. A reader that has been closed, removed, or
+// whose factory has already closed is no longer registered, so this is not
+// necessarily a caller error.
+type ReaderNotFoundError struct{}
+
+// Error returns the error message
+func (ReaderNotFoundError) Error() string {
+	return "reader not found"
+}
+
+// Is reports whether target is a ReaderNotFoundError, so errors.Is works on
+// wrapped errors.
+func (ReaderNotFoundError) Is(target error) bool {
+	_, ok := target.(ReaderNotFoundError)
+	return ok
+}
+
+// IsReaderNotFoundError returns true if the specified error is a
+// ReaderNotFoundError
+func IsReaderNotFoundError(e error) bool {
+	var t ReaderNotFoundError
+	return errors.As(e, &t)
+}
+
+// NotAReaderInstanceError will be reported if the reader was not created by a
+// DoppelgangerFactory.
+type NotAReaderInstanceError struct{}
+
+// Error returns the error message
+func (NotAReaderInstanceError) Error() string {
+	return "not a reader instance"
+}
+
+// Is reports whether target is a NotAReaderInstanceError, so errors.Is works
+// on wrapped errors.
+func (NotAReaderInstanceError) Is(target error) bool {
+	_, ok := target.(NotAReaderInstanceError)
+	return ok
+}
+
+// IsNotAReaderInstanceError returns true if the specified error is a
+// NotAReaderInstanceError
+func IsNotAReaderInstanceError(e error) bool {
+	var t NotAReaderInstanceError
+	return errors.As(e, &t)
+}
+
 // NilReaderError will be reported if the provided reader is nil
 type NilReaderError struct{}
 
@@ -249,13 +297,28 @@ func (factory *nestedDoppelgangerFactory) RemoveDoppelganger(r io.ReadCloser) er
 }
 
 func (factory *nestedDoppelgangerFactory) Close() error {
+	// Every reader is removed even if one of them reports an error, so a
+	// single failure cannot leak the rest. The first real error is returned
+	// once the loop has finished.
+	//
+	// ErrReaderNotFound is expected rather than exceptional here: the parent
+	// drops its readers when it closes, which happens as soon as the source
+	// reaches EOF, and a caller may also have closed a reader itself. Treating
+	// that as a failure made Close report an error after a perfectly ordinary
+	// read-to-completion.
+	var firstErr error
 	for i := len(factory.readers) - 1; i >= 0; i-- {
 		if err := factory.RemoveDoppelganger(factory.readers[i]); err != nil {
-			return err
+			if IsReaderNotFoundError(err) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	factory.readers = nil
-	return nil
+	return firstErr
 }
 
 // HTTPMiddleware adds a doppelganger factory for the body to the request.

@@ -920,3 +920,209 @@ func TestNilReaderErrorMatching(t *testing.T) {
 		t.Error("errors.As failed on a wrapped error")
 	}
 }
+
+func TestNestedCloseAfterReadToEOF(t *testing.T) {
+	// A nested factory must close cleanly after its readers have been read to
+	// completion. The parent drops its readers when it self-closes at EOF, so
+	// the nested factory's removal calls find nothing - which used to be
+	// reported as an error from an entirely successful read.
+	parent := doppelgangerreader.NewFactory(bytes.NewReader([]byte("abcdef")))
+	defer parent.Close()
+
+	nested := doppelgangerreader.NewFactory(parent.NewDoppelganger())
+	reader := nested.NewDoppelganger()
+
+	data, err := ioutil.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(data, []byte("abcdef")) {
+		t.Fatalf("got %q, want %q", data, "abcdef")
+	}
+
+	if err := nested.Close(); err != nil {
+		t.Fatalf("nested Close after a complete read: %v", err)
+	}
+}
+
+func TestNestedCloseAfterReaderClose(t *testing.T) {
+	// The caller closing a reader itself must not make the factory's own Close
+	// report a failure.
+	parent := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
+	defer parent.Close()
+
+	nested := doppelgangerreader.NewFactory(parent.NewDoppelganger())
+	reader := nested.NewDoppelganger()
+
+	if _, err := reader.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("partial read: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("reader Close: %v", err)
+	}
+
+	if err := nested.Close(); err != nil {
+		t.Fatalf("nested Close after the caller closed a reader: %v", err)
+	}
+}
+
+func TestNestedCloseRemovesEveryReader(t *testing.T) {
+	// Close used to return on the first error, leaving the remaining readers
+	// attached. All of them must be removed regardless.
+	parent := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 1024)))
+	defer parent.Close()
+
+	nested := doppelgangerreader.NewFactory(parent.NewDoppelganger())
+
+	readers := make([]io.ReadCloser, 0, 4)
+	for i := 0; i < 4; i++ {
+		readers = append(readers, nested.NewDoppelganger())
+	}
+	// Detach one in the middle so the loop meets a "not found" partway through.
+	if err := readers[2].Close(); err != nil {
+		t.Fatalf("pre-close: %v", err)
+	}
+
+	if err := nested.Close(); err != nil {
+		t.Fatalf("nested Close: %v", err)
+	}
+
+	// Every reader should now be detached, so each reports EOF.
+	for i, r := range readers {
+		if _, err := r.Read(make([]byte, 1)); err != io.EOF {
+			t.Errorf("reader %d: expected io.EOF after Close, got %v", i, err)
+		}
+	}
+}
+
+func TestRemoveDoppelgangerTypedErrors(t *testing.T) {
+	// The two failure modes are distinguishable, so callers can tell
+	// "not mine" from "already gone".
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 16)))
+	defer factory.Close()
+
+	notInstance := factory.RemoveDoppelganger(ioutil.NopCloser(bytes.NewReader(nil)))
+	if !errors.Is(notInstance, doppelgangerreader.NotAReaderInstanceError{}) {
+		t.Errorf("expected a NotAReaderInstanceError, got %v (%T)", notInstance, notInstance)
+	}
+	if !doppelgangerreader.IsNotAReaderInstanceError(notInstance) {
+		t.Error("IsNotAReaderInstanceError returned false")
+	}
+
+	other := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 16)))
+	defer other.Close()
+
+	notFound := factory.RemoveDoppelganger(other.NewDoppelganger())
+	if !errors.Is(notFound, doppelgangerreader.ReaderNotFoundError{}) {
+		t.Errorf("expected a ReaderNotFoundError, got %v (%T)", notFound, notFound)
+	}
+	if !doppelgangerreader.IsReaderNotFoundError(notFound) {
+		t.Error("IsReaderNotFoundError returned false")
+	}
+
+	// The two must not be mistaken for each other.
+	if errors.Is(notFound, doppelgangerreader.NotAReaderInstanceError{}) {
+		t.Error("a ReaderNotFoundError matched NotAReaderInstanceError")
+	}
+	if errors.Is(notInstance, doppelgangerreader.ReaderNotFoundError{}) {
+		t.Error("a NotAReaderInstanceError matched ReaderNotFoundError")
+	}
+}
+
+func TestErrorsWorkWhenWrapped(t *testing.T) {
+	// Every custom error must survive wrapping, which is the whole point of
+	// errors.Is/As. The Is* helpers go through errors.As for the same reason:
+	// a type assertion would miss a wrapped error.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 16)))
+	defer factory.Close()
+
+	other := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 16)))
+	defer other.Close()
+
+	nilFactory := doppelgangerreader.NewFactory(nil)
+	nilReader := nilFactory.NewDoppelganger()
+	_, nilErr := nilReader.Read(make([]byte, 1))
+
+	tests := []struct {
+		name   string
+		err    error
+		target error
+		is     func(error) bool
+	}{
+		{
+			name:   "NilReaderError",
+			err:    nilErr,
+			target: doppelgangerreader.NilReaderError{},
+			is:     doppelgangerreader.IsNilReaderError,
+		},
+		{
+			name:   "NotAReaderInstanceError",
+			err:    factory.RemoveDoppelganger(ioutil.NopCloser(bytes.NewReader(nil))),
+			target: doppelgangerreader.NotAReaderInstanceError{},
+			is:     doppelgangerreader.IsNotAReaderInstanceError,
+		},
+		{
+			name:   "ReaderNotFoundError",
+			err:    factory.RemoveDoppelganger(other.NewDoppelganger()),
+			target: doppelgangerreader.ReaderNotFoundError{},
+			is:     doppelgangerreader.IsReaderNotFoundError,
+		},
+	}
+
+	for _, tt := range tests {
+		if tt.err == nil {
+			t.Fatalf("%s: expected an error to test with", tt.name)
+		}
+
+		// bare
+		if !errors.Is(tt.err, tt.target) {
+			t.Errorf("%s: errors.Is failed on the bare error", tt.name)
+		}
+		if !tt.is(tt.err) {
+			t.Errorf("%s: the Is helper failed on the bare error", tt.name)
+		}
+
+		// wrapped once
+		wrapped := fmt.Errorf("outer: %w", tt.err)
+		if !errors.Is(wrapped, tt.target) {
+			t.Errorf("%s: errors.Is failed on a wrapped error", tt.name)
+		}
+		if !tt.is(wrapped) {
+			t.Errorf("%s: the Is helper failed on a wrapped error", tt.name)
+		}
+
+		// wrapped twice
+		twice := fmt.Errorf("outer: %w", wrapped)
+		if !errors.Is(twice, tt.target) {
+			t.Errorf("%s: errors.Is failed on a doubly wrapped error", tt.name)
+		}
+		if !tt.is(twice) {
+			t.Errorf("%s: the Is helper failed on a doubly wrapped error", tt.name)
+		}
+
+		// must not match an unrelated error
+		if tt.is(errors.New("unrelated")) {
+			t.Errorf("%s: the Is helper matched an unrelated error", tt.name)
+		}
+		if tt.is(nil) {
+			t.Errorf("%s: the Is helper matched nil", tt.name)
+		}
+	}
+}
+
+func TestErrorsAsRecoversConcreteType(t *testing.T) {
+	// errors.As must work too, so a caller can reach the concrete type.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 16)))
+	defer factory.Close()
+
+	wrapped := fmt.Errorf("outer: %w",
+		factory.RemoveDoppelganger(ioutil.NopCloser(bytes.NewReader(nil))))
+
+	var target doppelgangerreader.NotAReaderInstanceError
+	if !errors.As(wrapped, &target) {
+		t.Fatal("errors.As could not recover NotAReaderInstanceError")
+	}
+	if target.Error() == "" {
+		t.Error("the recovered error has no message")
+	}
+}
