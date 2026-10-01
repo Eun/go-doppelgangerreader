@@ -2,11 +2,11 @@ package doppelgangerreader_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/big"
 	"mime/multipart"
 	"net/http"
@@ -127,7 +127,7 @@ func TestCloseAfterFail(t *testing.T) {
 		t.Fatalf("expected 0, but got %d", n)
 	}
 
-	// do it again with another reader, we should expect the same behaviour
+	// do it again with another reader, we should expect the same behavior
 	reader2 := reader.NewDoppelganger()
 	buf2 := read(t, reader2, 10)
 	n, err = reader2.Read(buf2)
@@ -172,7 +172,7 @@ func TestDoppelganger_RemoveReader(t *testing.T) {
 		reader := doppelgangerreader.NewFactory(rand.Reader)
 		defer reader.Close()
 
-		if err := reader.RemoveDoppelganger(ioutil.NopCloser(bytes.NewBuffer(nil))); err == nil {
+		if err := reader.RemoveDoppelganger(io.NopCloser(bytes.NewBuffer(nil))); err == nil {
 			t.Fatalf("expected error")
 		}
 	})
@@ -209,8 +209,6 @@ func TestConcurrent(t *testing.T) {
 		buf := make([]byte, size)
 		n, err := io.ReadAtLeast(factory.NewDoppelganger(), buf, size)
 
-		// fmt.Printf("%d: %d %s (%d) %v\n", i, size, string(buf[:n]), n, err)
-
 		resultData.Store(i, &Result{
 			Error: err,
 			Size:  size,
@@ -221,8 +219,8 @@ func TestConcurrent(t *testing.T) {
 
 	// generates a random number between 10 and 20
 	randSize := func() int {
-		max := big.NewInt(10)
-		n, err := rand.Int(rand.Reader, max)
+		upper := big.NewInt(10)
+		n, err := rand.Int(rand.Reader, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -263,7 +261,7 @@ func TestReadAfterSourceIsClosed(t *testing.T) {
 	factory := doppelgangerreader.NewFactory(bytes.NewBufferString("Hello World"))
 
 	// consume everything
-	_, err := ioutil.ReadAll(factory.NewDoppelganger())
+	_, err := io.ReadAll(factory.NewDoppelganger())
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -271,7 +269,7 @@ func TestReadAfterSourceIsClosed(t *testing.T) {
 	if err := factory.Close(); err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
-	buf, err := ioutil.ReadAll(factory.NewDoppelganger())
+	buf, err := io.ReadAll(factory.NewDoppelganger())
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -302,12 +300,12 @@ func TestFillBufferEOFOnFirstCall(t *testing.T) {
 	factory := doppelgangerreader.NewFactory(eofReader{})
 	defer factory.Close()
 
-	buf1, err := ioutil.ReadAll(factory.NewDoppelganger())
+	buf1, err := io.ReadAll(factory.NewDoppelganger())
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
 
-	buf2, err := ioutil.ReadAll(factory.NewDoppelganger())
+	buf2, err := io.ReadAll(factory.NewDoppelganger())
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -317,12 +315,46 @@ func TestFillBufferEOFOnFirstCall(t *testing.T) {
 	}
 }
 
+// writeMultipartBody builds the multipart payload used by
+// TestHttpMultipartReader. Extracted to keep that test under the cognitive
+// complexity limit.
+func writeMultipartBody(t *testing.T, w *multipart.Writer, buf *bytes.Buffer, fileContents []byte) {
+	t.Helper()
+
+	part, err := w.CreateFormFile("myfile", "my-file.txt")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err = part.Write(fileContents); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// NOTE: there was a second part.Write([]byte("val")) here. WriteField
+	// below finishes the file part, so that write always failed with
+	// "multipart: can't write to finished part" - its error was simply
+	// discarded, making it dead code. Dropped rather than "fixed", because
+	// the field it meant to add is already written by WriteField.
+	if err = w.WriteField("key", "val"); err != nil {
+		t.Fatalf("WriteField: %v", err)
+	}
+	if err = w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s := buf.String()
+	if s == "" {
+		t.Fatalf("String: unexpected empty result")
+	}
+	if s[0] == '\r' || s[0] == '\n' {
+		t.Fatalf("String: unexpected newline")
+	}
+}
+
 func TestHttpMultipartReader(t *testing.T) {
 	// parts from mime/multipart/writer_test.go (go1.12.5)
 	fileContents := []byte("my file contents")
 
 	m := http.NewServeMux()
-	m.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+	m.HandleFunc("/", func(_ http.ResponseWriter, request *http.Request) {
 		factory := doppelgangerreader.NewFactory(request.Body)
 		defer factory.Close()
 
@@ -340,7 +372,7 @@ func TestHttpMultipartReader(t *testing.T) {
 		if g, e := part.FormName(), "myfile"; g != e {
 			t.Errorf("part 1: want form name %q, got %q", e, g)
 		}
-		slurp, err := ioutil.ReadAll(part)
+		slurp, err := io.ReadAll(part)
 		if err != nil {
 			t.Fatalf("part 1: ReadAll: %v", err)
 		}
@@ -355,7 +387,7 @@ func TestHttpMultipartReader(t *testing.T) {
 		if g, e := part.FormName(), "key"; g != e {
 			t.Errorf("part 2: want form name %q, got %q", e, g)
 		}
-		slurp, err = ioutil.ReadAll(part)
+		slurp, err = io.ReadAll(part)
 		if err != nil {
 			t.Fatalf("part 2: ReadAll: %v", err)
 		}
@@ -373,33 +405,19 @@ func TestHttpMultipartReader(t *testing.T) {
 
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	{
-		part, err := w.CreateFormFile("myfile", "my-file.txt")
-		if err != nil {
-			t.Fatalf("CreateFormFile: %v", err)
-		}
-		part.Write(fileContents)
-		err = w.WriteField("key", "val")
-		if err != nil {
-			t.Fatalf("WriteField: %v", err)
-		}
-		part.Write([]byte("val"))
-		err = w.Close()
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		s := buf.String()
-		if len(s) == 0 {
-			t.Fatalf("String: unexpected empty result")
-		}
-		if s[0] == '\r' || s[0] == '\n' {
-			t.Fatalf("String: unexpected newline")
-		}
-	}
+	writeMultipartBody(t, w, &buf, fileContents)
 
-	_, err := s.Client().Post(s.URL, w.FormDataContentType(), &buf)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.URL, &buf)
+	if err != nil {
+		t.Fatalf("unable to build request: %v", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := s.Client().Do(req)
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
+	}
+	if err = resp.Body.Close(); err != nil {
+		t.Fatalf("closing response body: %v", err)
 	}
 }
 
@@ -427,7 +445,7 @@ func TestConsumeSource(t *testing.T) {
 	factory := doppelgangerreader.NewFactory(source)
 	defer factory.Close()
 
-	b, err := ioutil.ReadAll(factory.NewDoppelganger())
+	b, err := io.ReadAll(factory.NewDoppelganger())
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -435,7 +453,7 @@ func TestConsumeSource(t *testing.T) {
 		t.Fatalf("expected %v, but got %v", data, b)
 	}
 
-	b, err = ioutil.ReadAll(source)
+	b, err = io.ReadAll(source)
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -456,7 +474,7 @@ func (e *testErrorHandler) ServeHTTP(writer http.ResponseWriter, request *http.R
 	defer func() {
 		var err error
 		e.Error = recover()
-		e.Body, err = ioutil.ReadAll(factory.NewDoppelganger())
+		e.Body, err = io.ReadAll(factory.NewDoppelganger())
 		if err != nil {
 			panic(err)
 		}
@@ -469,8 +487,8 @@ func TestHttpHandlerRecover(t *testing.T) {
 	payload := []byte("Hello World")
 	panicError := "some error"
 	handler := http.NewServeMux()
-	handler.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
-		_, _ = ioutil.ReadAll(request.Body)
+	handler.HandleFunc("/", func(_ http.ResponseWriter, request *http.Request) {
+		_, _ = io.ReadAll(request.Body)
 		panic(panicError)
 	})
 
@@ -479,10 +497,17 @@ func TestHttpHandlerRecover(t *testing.T) {
 	}
 	server := httptest.NewServer(errorHandler)
 
-	_, err := http.Post(server.URL, "application/octet-stream", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		server.URL, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
 	if !bytes.Equal(payload, errorHandler.Body) {
 		t.Fatalf("expected %v, but got %v", payload, errorHandler.Body)
 	}
@@ -500,7 +525,7 @@ func TestNestedDoppelganger(t *testing.T) {
 	}
 
 	// test if we can read from new factory without error
-	b, err := ioutil.ReadAll(io.LimitReader(secondFactory.NewDoppelganger(), 1))
+	b, err := io.ReadAll(io.LimitReader(secondFactory.NewDoppelganger(), 1))
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -514,7 +539,7 @@ func TestNestedDoppelganger(t *testing.T) {
 	}
 
 	// test if we can still read from original factory without error
-	b, err = ioutil.ReadAll(factory.NewDoppelganger())
+	b, err = io.ReadAll(factory.NewDoppelganger())
 	if err != nil {
 		t.Fatalf("expected no error, but got %v", err)
 	}
@@ -539,16 +564,21 @@ func TestHTTPMiddleware(t *testing.T) {
 	srv := httptest.NewServer(doppelgangerreader.HTTPMiddleware(mux, 0))
 	defer srv.Close()
 
-	response, err := srv.Client().Get(srv.URL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, http.NoBody)
+	if err != nil {
+		t.Fatalf("unable to build request: %v", err)
+	}
+	response, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("unable to get response: %v", err)
 	}
+	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("expected %v, but got %v", http.StatusOK, response.StatusCode)
 	}
 	defer response.Body.Close()
-	body, err := ioutil.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("unable to get body: %v", err)
 	}
@@ -600,7 +630,7 @@ func TestReaderInstanceCloseAfterRemove(t *testing.T) {
 	}
 }
 
-func TestConcurrentCloseAndRead(t *testing.T) {
+func TestConcurrentCloseAndRead(_ *testing.T) {
 	// Close and Read both inspect state owned by the factory. Close used to
 	// read closedOn without the mutex, and RemoveDoppelganger used to clear
 	// DoppelBase while Read was reading it, so the race detector reported two
@@ -614,7 +644,7 @@ func TestConcurrentCloseAndRead(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, _ = ioutil.ReadAll(reader)
+			_, _ = io.ReadAll(reader)
 		}()
 		go func() {
 			defer wg.Done()
@@ -624,7 +654,7 @@ func TestConcurrentCloseAndRead(t *testing.T) {
 	wg.Wait()
 }
 
-func TestConcurrentCloseAndFactoryClose(t *testing.T) {
+func TestConcurrentCloseAndFactoryClose(_ *testing.T) {
 	// Factory.Close writes closedOn while the per-reader Close reads it.
 	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 1<<16)))
 
@@ -649,7 +679,7 @@ func TestConcurrentCloseAndFactoryClose(t *testing.T) {
 	wg.Wait()
 }
 
-func TestConcurrentRemoveAndRead(t *testing.T) {
+func TestConcurrentRemoveAndRead(_ *testing.T) {
 	// RemoveDoppelganger detaches a reader that another goroutine may be
 	// reading. The reader must stop cleanly at io.EOF rather than racing.
 	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 1<<16)))
@@ -661,7 +691,7 @@ func TestConcurrentRemoveAndRead(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, _ = ioutil.ReadAll(reader)
+			_, _ = io.ReadAll(reader)
 		}()
 		go func() {
 			defer wg.Done()
@@ -674,7 +704,7 @@ func TestConcurrentRemoveAndRead(t *testing.T) {
 func TestReadAfterRemoveReturnsEOF(t *testing.T) {
 	// Detaching a reader must end its stream. This used to work by clearing
 	// DoppelBase; it is now a flag checked under the lock, so pin the
-	// behaviour.
+	// behavior.
 	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
 	defer factory.Close()
 
@@ -697,7 +727,7 @@ func TestGetFactoryAfterRemove(t *testing.T) {
 	// must not hand back a live factory.
 	//
 	// This previously worked as a side effect of RemoveDoppelganger clearing
-	// DoppelBase. That field is now left intact, so the behaviour has to be
+	// DoppelBase. That field is now left intact, so the behavior has to be
 	// preserved deliberately.
 	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
 	defer factory.Close()
@@ -725,10 +755,10 @@ func TestHTTPMiddlewareBodyWithinLimit(t *testing.T) {
 		var readErr error
 		handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
 			func(_ http.ResponseWriter, r *http.Request) {
-				got, readErr = ioutil.ReadAll(r.Body)
+				got, readErr = io.ReadAll(r.Body)
 			}), limit)
 
-		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(body))
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 
 		if readErr != nil {
@@ -751,10 +781,10 @@ func TestHTTPMiddlewareBodyOverLimitErrors(t *testing.T) {
 	var readErr error
 	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
 		func(_ http.ResponseWriter, r *http.Request) {
-			_, readErr = ioutil.ReadAll(r.Body)
+			_, readErr = io.ReadAll(r.Body)
 		}), limit)
 
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(body))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if readErr == nil {
@@ -781,10 +811,10 @@ func TestHTTPMiddlewareOverLimitViaFactory(t *testing.T) {
 			}
 			d := factory.NewDoppelganger()
 			defer d.Close()
-			_, readErr = ioutil.ReadAll(d)
+			_, readErr = io.ReadAll(d)
 		}), limit)
 
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(body))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if !doppelgangerreader.IsBodyTooLargeError(readErr) {
@@ -793,17 +823,17 @@ func TestHTTPMiddlewareOverLimitViaFactory(t *testing.T) {
 }
 
 func TestHTTPMiddlewareNoLimit(t *testing.T) {
-	// limit 0 keeps the previous unlimited behaviour.
+	// limit 0 keeps the previous unlimited behavior.
 	body := bytes.Repeat([]byte("C"), 1<<16)
 
 	var got []byte
 	var readErr error
 	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
 		func(_ http.ResponseWriter, r *http.Request) {
-			got, readErr = ioutil.ReadAll(r.Body)
+			got, readErr = io.ReadAll(r.Body)
 		}), 0)
 
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(body))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if readErr != nil {
@@ -836,10 +866,10 @@ func TestBodyTooLargeErrorMatching(t *testing.T) {
 	var readErr error
 	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
 		func(_ http.ResponseWriter, r *http.Request) {
-			_, readErr = ioutil.ReadAll(r.Body)
+			_, readErr = io.ReadAll(r.Body)
 		}), limit)
 
-	req := httptest.NewRequest(http.MethodPost, "/",
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/",
 		bytes.NewReader(bytes.Repeat([]byte("A"), 32)))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -932,7 +962,7 @@ func TestNestedCloseAfterReadToEOF(t *testing.T) {
 	nested := doppelgangerreader.NewFactory(parent.NewDoppelganger())
 	reader := nested.NewDoppelganger()
 
-	data, err := ioutil.ReadAll(reader)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -1001,7 +1031,7 @@ func TestRemoveDoppelgangerTypedErrors(t *testing.T) {
 	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 16)))
 	defer factory.Close()
 
-	notInstance := factory.RemoveDoppelganger(ioutil.NopCloser(bytes.NewReader(nil)))
+	notInstance := factory.RemoveDoppelganger(io.NopCloser(bytes.NewReader(nil)))
 	if !errors.Is(notInstance, doppelgangerreader.NotAReaderInstanceError{}) {
 		t.Errorf("expected a NotAReaderInstanceError, got %v (%T)", notInstance, notInstance)
 	}
@@ -1057,7 +1087,7 @@ func TestErrorsWorkWhenWrapped(t *testing.T) {
 		},
 		{
 			name:   "NotAReaderInstanceError",
-			err:    factory.RemoveDoppelganger(ioutil.NopCloser(bytes.NewReader(nil))),
+			err:    factory.RemoveDoppelganger(io.NopCloser(bytes.NewReader(nil))),
 			target: doppelgangerreader.NotAReaderInstanceError{},
 			is:     doppelgangerreader.IsNotAReaderInstanceError,
 		},
@@ -1116,7 +1146,7 @@ func TestErrorsAsRecoversConcreteType(t *testing.T) {
 	defer factory.Close()
 
 	wrapped := fmt.Errorf("outer: %w",
-		factory.RemoveDoppelganger(ioutil.NopCloser(bytes.NewReader(nil))))
+		factory.RemoveDoppelganger(io.NopCloser(bytes.NewReader(nil))))
 
 	var target doppelgangerreader.NotAReaderInstanceError
 	if !errors.As(wrapped, &target) {

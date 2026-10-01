@@ -1,0 +1,17 @@
+# this workflow labels pull requests based on their title.
+# the configuration is at .github/labeler.yml.
+# it re-runs whenever a PR is opened, its title is edited,
+# or a label is manually added or removed (to keep labels in sync).
+on:
+  pull_request_target:
+    types: [opened, edited, labeled, unlabeled]
+
+name: "pr_labeler"
+jobs:
+  label_pull_request:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label Pull Request
+        uses: jimschubert/labeler-action@v2.1.4
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

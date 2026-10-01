@@ -9,8 +9,8 @@ import (
 	"sync"
 )
 
-// DoppelgangerFactory is a reader that mimics the behaviour of an other reader
-// it can be used to read readers multiple times
+// DoppelgangerFactory is a reader that mimics the behavior of an other reader
+// it can be used to read readers multiple times.
 type DoppelgangerFactory interface {
 	NewDoppelganger() io.ReadCloser
 	RemoveDoppelganger(r io.ReadCloser) error
@@ -18,7 +18,7 @@ type DoppelgangerFactory interface {
 }
 
 // NewFactory creates a new DoppelgangerFactory with the original reader specified
-// if the reader is already a Doppelganger it will return the original factory
+// if the reader is already a Doppelganger it will return the original factory.
 func NewFactory(readerToMimic io.Reader) DoppelgangerFactory {
 	factory := GetFactory(readerToMimic)
 	if factory != nil {
@@ -39,7 +39,7 @@ type doppelgangerFactory struct {
 	closedOn *int
 }
 
-// NewDoppelganger creates a new reader that acts like the original reader
+// NewDoppelganger creates a new reader that acts like the original reader.
 func (factory *doppelgangerFactory) NewDoppelganger() io.ReadCloser {
 	factory.mu.Lock()
 	reader := &readerInstance{
@@ -55,7 +55,7 @@ func (factory *doppelgangerFactory) NewDoppelganger() io.ReadCloser {
 	return reader
 }
 
-// RemoveDoppelganger a created reader from receiving new data
+// RemoveDoppelganger a created reader from receiving new data.
 func (factory *doppelgangerFactory) RemoveDoppelganger(r io.ReadCloser) error {
 	instance, ok := r.(*readerInstance)
 	if !ok {
@@ -80,7 +80,7 @@ func (factory *doppelgangerFactory) removeLocked(instance *readerInstance) error
 }
 
 // Close the DoppelgangerFactory and stops all created Doppelgangers from receiving data
-// (does not close the underlying reader)
+// (does not close the underlying reader).
 func (factory *doppelgangerFactory) Close() error {
 	// this is a public function so make sure we lock
 	factory.mu.Lock()
@@ -90,7 +90,7 @@ func (factory *doppelgangerFactory) Close() error {
 }
 
 // close the DoppelgangerFactory and stops all created Doppelgangers from receiving data
-// (does not close the underlying reader)
+// (does not close the underlying reader).
 func (factory *doppelgangerFactory) close() error {
 	// we already closed
 	if factory.closedOn != nil {
@@ -199,7 +199,7 @@ func (r *readerInstance) Close() error {
 // necessarily a caller error.
 type ReaderNotFoundError struct{}
 
-// Error returns the error message
+// Error returns the error message.
 func (ReaderNotFoundError) Error() string {
 	return "reader not found"
 }
@@ -212,7 +212,7 @@ func (ReaderNotFoundError) Is(target error) bool {
 }
 
 // IsReaderNotFoundError returns true if the specified error is a
-// ReaderNotFoundError
+// ReaderNotFoundError.
 func IsReaderNotFoundError(e error) bool {
 	var t ReaderNotFoundError
 	return errors.As(e, &t)
@@ -222,7 +222,7 @@ func IsReaderNotFoundError(e error) bool {
 // DoppelgangerFactory.
 type NotAReaderInstanceError struct{}
 
-// Error returns the error message
+// Error returns the error message.
 func (NotAReaderInstanceError) Error() string {
 	return "not a reader instance"
 }
@@ -235,16 +235,16 @@ func (NotAReaderInstanceError) Is(target error) bool {
 }
 
 // IsNotAReaderInstanceError returns true if the specified error is a
-// NotAReaderInstanceError
+// NotAReaderInstanceError.
 func IsNotAReaderInstanceError(e error) bool {
 	var t NotAReaderInstanceError
 	return errors.As(e, &t)
 }
 
-// NilReaderError will be reported if the provided reader is nil
+// NilReaderError will be reported if the provided reader is nil.
 type NilReaderError struct{}
 
-// Error returns the error message
+// Error returns the error message.
 func (NilReaderError) Error() string {
 	return "Reader to mimic is nil"
 }
@@ -256,13 +256,13 @@ func (NilReaderError) Is(target error) bool {
 	return ok
 }
 
-// IsNilReaderError returns true if the specified error is a NilReaderError
+// IsNilReaderError returns true if the specified error is a NilReaderError.
 func IsNilReaderError(e error) bool {
 	var t NilReaderError
 	return errors.As(e, &t)
 }
 
-// GetFactory returns the DoppelgangerFactory if the reader is a Doppelganger
+// GetFactory returns the DoppelgangerFactory if the reader is a Doppelganger.
 func GetFactory(reader io.Reader) DoppelgangerFactory {
 	v, ok := reader.(*readerInstance)
 	if !ok || v.DoppelBase == nil {
@@ -270,7 +270,7 @@ func GetFactory(reader io.Reader) DoppelgangerFactory {
 	}
 
 	// A detached reader is no longer attached to anything useful, so report no
-	// factory. This preserves the behaviour from when detaching cleared
+	// factory. This preserves the behavior from when detaching cleared
 	// DoppelBase outright; the field is now left intact because Read needs it
 	// to reach the mutex, and mutating it was a data race.
 	v.DoppelBase.mu.Lock()
@@ -343,7 +343,7 @@ type BodyTooLargeError struct {
 	Limit int64
 }
 
-// Error returns the error message
+// Error returns the error message.
 func (e BodyTooLargeError) Error() string {
 	return "http: request body too large"
 }
@@ -361,7 +361,7 @@ func (BodyTooLargeError) Is(target error) bool {
 }
 
 // IsBodyTooLargeError returns true if the specified error is a
-// BodyTooLargeError
+// BodyTooLargeError.
 func IsBodyTooLargeError(e error) bool {
 	var t BodyTooLargeError
 	return errors.As(e, &t)

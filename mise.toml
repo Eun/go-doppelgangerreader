@@ -1,0 +1,19 @@
+[tools]
+go = "1.25.5"
+golangci-lint = "2.12.2"
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.test]
+description = "Run tests with coverage"
+run = "go test -v -count=1 -cover -coverprofile=coverage.out -covermode=atomic ./..."
+
+[tasks."test:race"]
+description = "Run tests with the race detector"
+run = "go test -race -count=1 ./..."
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "rm -rf coverage.out"
