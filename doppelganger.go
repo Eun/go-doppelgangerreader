@@ -63,9 +63,14 @@ func (factory *doppelgangerFactory) RemoveDoppelganger(r io.ReadCloser) error {
 	}
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
+	return factory.removeLocked(instance)
+}
+
+// removeLocked detaches a reader. The caller must hold factory.mu.
+func (factory *doppelgangerFactory) removeLocked(instance *readerInstance) error {
 	for i := len(factory.readers) - 1; i >= 0; i-- {
 		if factory.readers[i] == instance {
-			factory.readers[i].DoppelBase = nil
+			factory.readers[i].detached = true
 			factory.readers = append(factory.readers[:i], factory.readers[i+1:]...)
 			return nil
 		}
@@ -128,6 +133,12 @@ func (factory *doppelgangerFactory) read(caller *readerInstance, p []byte) (int,
 type readerInstance struct {
 	DoppelBase *doppelgangerFactory
 	Buffer     *bytes.Buffer
+	// detached is set once the reader has been removed from its factory, in
+	// place of clearing DoppelBase. DoppelBase has to stay readable without
+	// the lock (Read needs it to find the mutex in the first place), so
+	// mutating it was an unavoidable data race. detached is only ever touched
+	// while holding DoppelBase.mu.
+	detached bool
 }
 
 func (r *readerInstance) Read(p []byte) (n int, err error) {
@@ -135,6 +146,14 @@ func (r *readerInstance) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 	r.DoppelBase.mu.Lock()
+	defer r.DoppelBase.mu.Unlock()
+
+	// Checked under the lock: RemoveDoppelganger can detach this reader
+	// concurrently.
+	if r.detached {
+		return 0, io.EOF
+	}
+
 	if r.Buffer.Len() > 0 {
 		n, err = r.Buffer.Read(p)
 	} else {
@@ -143,21 +162,33 @@ func (r *readerInstance) Read(p []byte) (n int, err error) {
 			r.DoppelBase.close()
 		}
 	}
-	r.DoppelBase.mu.Unlock()
 	return n, err
 }
 
 func (r *readerInstance) Close() error {
-	// RemoveDoppelganger and a previous Close both set DoppelBase to nil, so
-	// this can be called on an already detached reader. Closing twice must be
-	// a no-op rather than a nil dereference.
+	// A nil factory means the reader was never attached, so there is nothing
+	// to detach from.
 	if r.DoppelBase == nil {
 		return nil
 	}
+
+	r.DoppelBase.mu.Lock()
+	defer r.DoppelBase.mu.Unlock()
+
+	// Already detached by a previous Close or by RemoveDoppelganger: closing
+	// again is a no-op, matching the usual io.Closer expectation. This is the
+	// guard added in #1, now moved under the lock and keyed on the detached
+	// flag rather than a cleared DoppelBase.
+	if r.detached {
+		return nil
+	}
+
 	// if the factory is already closed
 	// we dont need to remove
 	if r.DoppelBase.closedOn == nil {
-		return r.DoppelBase.RemoveDoppelganger(r)
+		// Inlined rather than calling RemoveDoppelganger, which would take the
+		// same non-reentrant mutex.
+		return r.DoppelBase.removeLocked(r)
 	}
 	return nil
 }
@@ -178,10 +209,21 @@ func IsNilReaderError(e error) bool {
 
 // GetFactory returns the DoppelgangerFactory if the reader is a Doppelganger
 func GetFactory(reader io.Reader) DoppelgangerFactory {
-	if v, ok := reader.(*readerInstance); ok {
-		return v.DoppelBase
+	v, ok := reader.(*readerInstance)
+	if !ok || v.DoppelBase == nil {
+		return nil
 	}
-	return nil
+
+	// A detached reader is no longer attached to anything useful, so report no
+	// factory. This preserves the behaviour from when detaching cleared
+	// DoppelBase outright; the field is now left intact because Read needs it
+	// to reach the mutex, and mutating it was a data race.
+	v.DoppelBase.mu.Lock()
+	defer v.DoppelBase.mu.Unlock()
+	if v.detached {
+		return nil
+	}
+	return v.DoppelBase
 }
 
 type nestedDoppelgangerFactory struct {
