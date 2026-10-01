@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -711,5 +712,211 @@ func TestGetFactoryAfterRemove(t *testing.T) {
 	}
 	if got := doppelgangerreader.GetFactory(reader); got != nil {
 		t.Errorf("expected nil factory for a detached doppelganger, got %T", got)
+	}
+}
+
+func TestHTTPMiddlewareBodyWithinLimit(t *testing.T) {
+	// A body at or below the limit must be delivered whole, with no error.
+	for _, size := range []int{0, 1, 7, 8} {
+		const limit = 8
+		body := bytes.Repeat([]byte("A"), size)
+
+		var got []byte
+		var readErr error
+		handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
+			func(_ http.ResponseWriter, r *http.Request) {
+				got, readErr = ioutil.ReadAll(r.Body)
+			}), limit)
+
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		if readErr != nil {
+			t.Fatalf("size %d: unexpected error: %v", size, readErr)
+		}
+		if !bytes.Equal(got, body) {
+			t.Fatalf("size %d: got %q, want %q", size, got, body)
+		}
+	}
+}
+
+func TestHTTPMiddlewareBodyOverLimitErrors(t *testing.T) {
+	// A body over the limit must surface an error rather than arriving
+	// truncated. Silent truncation is dangerous for an authenticated body: the
+	// handler would verify a signature over bytes the client never sent and
+	// have no way to notice.
+	const limit = 8
+	body := bytes.Repeat([]byte("A"), 32)
+
+	var readErr error
+	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			_, readErr = ioutil.ReadAll(r.Body)
+		}), limit)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if readErr == nil {
+		t.Fatal("expected an error for a body over the limit, got nil")
+	}
+	if !doppelgangerreader.IsBodyTooLargeError(readErr) {
+		t.Fatalf("expected a BodyTooLargeError, got %T: %v", readErr, readErr)
+	}
+}
+
+func TestHTTPMiddlewareOverLimitViaFactory(t *testing.T) {
+	// The error must also reach a reader taken from the factory, not just the
+	// one installed as r.Body.
+	const limit = 4
+	body := bytes.Repeat([]byte("B"), 64)
+
+	var readErr error
+	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			factory := doppelgangerreader.HTTPBodyFactory(r)
+			if factory == nil {
+				t.Error("no factory on the request")
+				return
+			}
+			d := factory.NewDoppelganger()
+			defer d.Close()
+			_, readErr = ioutil.ReadAll(d)
+		}), limit)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if !doppelgangerreader.IsBodyTooLargeError(readErr) {
+		t.Fatalf("expected a BodyTooLargeError, got %T: %v", readErr, readErr)
+	}
+}
+
+func TestHTTPMiddlewareNoLimit(t *testing.T) {
+	// limit 0 keeps the previous unlimited behaviour.
+	body := bytes.Repeat([]byte("C"), 1<<16)
+
+	var got []byte
+	var readErr error
+	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			got, readErr = ioutil.ReadAll(r.Body)
+		}), 0)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if readErr != nil {
+		t.Fatalf("unexpected error: %v", readErr)
+	}
+	if len(got) != len(body) {
+		t.Fatalf("got %d bytes, want %d", len(got), len(body))
+	}
+}
+
+func TestIsBodyTooLargeError(t *testing.T) {
+	if !doppelgangerreader.IsBodyTooLargeError(doppelgangerreader.BodyTooLargeError{Limit: 1}) {
+		t.Error("expected true for a BodyTooLargeError")
+	}
+	if doppelgangerreader.IsBodyTooLargeError(errors.New("other")) {
+		t.Error("expected false for an unrelated error")
+	}
+	if doppelgangerreader.IsBodyTooLargeError(nil) {
+		t.Error("expected false for nil")
+	}
+}
+
+func TestBodyTooLargeErrorMatching(t *testing.T) {
+	// The error has to be matchable without the caller knowing the limit.
+	// Without an Is method errors.Is falls back to struct equality, so
+	// errors.Is(err, BodyTooLargeError{}) would be false for any non-zero
+	// limit - which is the obvious way to write the check.
+	const limit = 8
+
+	var readErr error
+	handler := doppelgangerreader.HTTPMiddleware(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			_, readErr = ioutil.ReadAll(r.Body)
+		}), limit)
+
+	req := httptest.NewRequest(http.MethodPost, "/",
+		bytes.NewReader(bytes.Repeat([]byte("A"), 32)))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if readErr == nil {
+		t.Fatal("expected an error for an over-limit body")
+	}
+
+	// The zero value must match regardless of the configured limit.
+	if !errors.Is(readErr, doppelgangerreader.BodyTooLargeError{}) {
+		t.Error("errors.Is failed against the zero-value target")
+	}
+	// A populated target must match too.
+	if !errors.Is(readErr, doppelgangerreader.BodyTooLargeError{Limit: limit}) {
+		t.Error("errors.Is failed against a populated target")
+	}
+	// Even one carrying a different limit: the limit is data, not identity.
+	if !errors.Is(readErr, doppelgangerreader.BodyTooLargeError{Limit: 999}) {
+		t.Error("errors.Is failed against a target with a different limit")
+	}
+
+	// errors.As recovers the limit.
+	var target doppelgangerreader.BodyTooLargeError
+	if !errors.As(readErr, &target) {
+		t.Fatal("errors.As could not recover BodyTooLargeError")
+	}
+	if target.Limit != limit {
+		t.Errorf("recovered Limit = %d, want %d", target.Limit, limit)
+	}
+
+	// All of it must survive wrapping.
+	wrapped := fmt.Errorf("reading body: %w", readErr)
+	if !errors.Is(wrapped, doppelgangerreader.BodyTooLargeError{}) {
+		t.Error("errors.Is failed on a wrapped error")
+	}
+	if !doppelgangerreader.IsBodyTooLargeError(wrapped) {
+		t.Error("IsBodyTooLargeError failed on a wrapped error")
+	}
+	var wrappedTarget doppelgangerreader.BodyTooLargeError
+	if !errors.As(wrapped, &wrappedTarget) || wrappedTarget.Limit != limit {
+		t.Error("errors.As failed to recover the limit from a wrapped error")
+	}
+
+	// It must not match something unrelated.
+	if errors.Is(readErr, doppelgangerreader.NilReaderError{}) {
+		t.Error("a BodyTooLargeError matched NilReaderError")
+	}
+}
+
+func TestNilReaderErrorMatching(t *testing.T) {
+	// NilReaderError predates this change; its Is* helper used a type
+	// assertion, so it returned false for a wrapped error even though
+	// errors.Is and errors.As both matched.
+	factory := doppelgangerreader.NewFactory(nil)
+	reader := factory.NewDoppelganger()
+
+	_, err := reader.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("expected an error from a nil source")
+	}
+
+	if !errors.Is(err, doppelgangerreader.NilReaderError{}) {
+		t.Error("errors.Is failed on the bare error")
+	}
+	if !doppelgangerreader.IsNilReaderError(err) {
+		t.Error("IsNilReaderError failed on the bare error")
+	}
+
+	wrapped := fmt.Errorf("outer: %w", err)
+	if !errors.Is(wrapped, doppelgangerreader.NilReaderError{}) {
+		t.Error("errors.Is failed on a wrapped error")
+	}
+	if !doppelgangerreader.IsNilReaderError(wrapped) {
+		t.Error("IsNilReaderError failed on a wrapped error")
+	}
+
+	var target doppelgangerreader.NilReaderError
+	if !errors.As(wrapped, &target) {
+		t.Error("errors.As failed on a wrapped error")
 	}
 }

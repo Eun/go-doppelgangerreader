@@ -201,10 +201,17 @@ func (NilReaderError) Error() string {
 	return "Reader to mimic is nil"
 }
 
+// Is reports whether target is a NilReaderError, so errors.Is works on
+// wrapped errors.
+func (NilReaderError) Is(target error) bool {
+	_, ok := target.(NilReaderError)
+	return ok
+}
+
 // IsNilReaderError returns true if the specified error is a NilReaderError
 func IsNilReaderError(e error) bool {
-	_, ok := e.(NilReaderError)
-	return ok
+	var t NilReaderError
+	return errors.As(e, &t)
 }
 
 // GetFactory returns the DoppelgangerFactory if the reader is a Doppelganger
@@ -255,11 +262,87 @@ func (factory *nestedDoppelgangerFactory) Close() error {
 // At the same time it replaces the original body with a doppelganger reader.
 // You can specify a size limit for the reader (0 disables the limit)
 // The factory can be fetched by using HTTPBodyFactory()
+//
+// A body that exceeds the limit is reported as BodyTooLargeError on the next
+// Read rather than being silently truncated, so a handler cannot mistake a
+// truncated body for a complete one. Use IsBodyTooLargeError to detect it.
 func HTTPMiddleware(handler http.Handler, limit int64) http.Handler {
 	if handler == nil {
 		panic("handler cannot be nil")
 	}
 	return httpMiddleware{handler, limit}
+}
+
+// BodyTooLargeError is reported when the request body exceeds the limit given
+// to HTTPMiddleware.
+type BodyTooLargeError struct {
+	// Limit is the configured maximum, in bytes.
+	Limit int64
+}
+
+// Error returns the error message
+func (e BodyTooLargeError) Error() string {
+	return "http: request body too large"
+}
+
+// Is reports whether target is a BodyTooLargeError, so errors.Is works on
+// wrapped errors.
+//
+// Limit is deliberately not compared: without this method errors.Is falls back
+// to struct equality, so the natural check
+// errors.Is(err, BodyTooLargeError{}) would be false for any non-zero limit.
+// Use errors.As when the limit itself is needed.
+func (BodyTooLargeError) Is(target error) bool {
+	_, ok := target.(BodyTooLargeError)
+	return ok
+}
+
+// IsBodyTooLargeError returns true if the specified error is a
+// BodyTooLargeError
+func IsBodyTooLargeError(e error) bool {
+	var t BodyTooLargeError
+	return errors.As(e, &t)
+}
+
+// limitedReader reads at most Limit bytes and then reports
+// BodyTooLargeError, instead of the silent io.EOF that io.LimitReader gives.
+//
+// The distinction matters whenever the body is authenticated: truncating it
+// silently means a handler verifies a signature over different bytes than the
+// client sent, and cannot tell.
+type limitedReader struct {
+	R         io.Reader
+	Limit     int64
+	remaining int64
+	exceeded  bool
+}
+
+func newLimitedReader(r io.Reader, limit int64) *limitedReader {
+	return &limitedReader{R: r, Limit: limit, remaining: limit}
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.exceeded {
+		return 0, BodyTooLargeError{Limit: l.Limit}
+	}
+
+	// Read one byte beyond the limit so going over can be detected, rather
+	// than stopping exactly at it and looking like a clean end of stream.
+	if int64(len(p)) > l.remaining+1 {
+		p = p[:l.remaining+1]
+	}
+
+	n, err := l.R.Read(p)
+	if n > 0 {
+		if int64(n) > l.remaining {
+			// Discard the overflow byte; the body is over the limit.
+			l.exceeded = true
+			l.remaining = 0
+			return 0, BodyTooLargeError{Limit: l.Limit}
+		}
+		l.remaining -= int64(n)
+	}
+	return n, err
 }
 
 // HTTPBodyFactory returns a http body factory for a request.
@@ -289,7 +372,7 @@ func (h httpMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var body io.Reader = r.Body
 	if h.limit > 0 {
-		body = io.LimitReader(r.Body, h.limit)
+		body = newLimitedReader(r.Body, h.limit)
 	}
 	factory := NewFactory(body)
 	r.Body = factory.NewDoppelganger()
