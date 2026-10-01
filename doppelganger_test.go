@@ -598,3 +598,118 @@ func TestReaderInstanceCloseAfterRemove(t *testing.T) {
 		t.Fatalf("Close after RemoveDoppelganger: %v", err)
 	}
 }
+
+func TestConcurrentCloseAndRead(t *testing.T) {
+	// Close and Read both inspect state owned by the factory. Close used to
+	// read closedOn without the mutex, and RemoveDoppelganger used to clear
+	// DoppelBase while Read was reading it, so the race detector reported two
+	// distinct races here.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 1<<16)))
+	defer factory.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		reader := factory.NewDoppelganger()
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = ioutil.ReadAll(reader)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = reader.Close()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestConcurrentCloseAndFactoryClose(t *testing.T) {
+	// Factory.Close writes closedOn while the per-reader Close reads it.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 1<<16)))
+
+	readers := make([]io.ReadCloser, 0, 16)
+	for i := 0; i < 16; i++ {
+		readers = append(readers, factory.NewDoppelganger())
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = factory.Close()
+	}()
+	for _, r := range readers {
+		wg.Add(1)
+		go func(r io.ReadCloser) {
+			defer wg.Done()
+			_ = r.Close()
+		}(r)
+	}
+	wg.Wait()
+}
+
+func TestConcurrentRemoveAndRead(t *testing.T) {
+	// RemoveDoppelganger detaches a reader that another goroutine may be
+	// reading. The reader must stop cleanly at io.EOF rather than racing.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 1<<16)))
+	defer factory.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		reader := factory.NewDoppelganger()
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = ioutil.ReadAll(reader)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = factory.RemoveDoppelganger(reader)
+		}()
+	}
+	wg.Wait()
+}
+
+func TestReadAfterRemoveReturnsEOF(t *testing.T) {
+	// Detaching a reader must end its stream. This used to work by clearing
+	// DoppelBase; it is now a flag checked under the lock, so pin the
+	// behaviour.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
+	defer factory.Close()
+
+	reader := factory.NewDoppelganger()
+	if _, err := reader.Read(make([]byte, 8)); err != nil {
+		t.Fatalf("partial read: %v", err)
+	}
+	if err := factory.RemoveDoppelganger(reader); err != nil {
+		t.Fatalf("RemoveDoppelganger: %v", err)
+	}
+
+	if _, err := reader.Read(make([]byte, 8)); err != io.EOF {
+		t.Fatalf("expected io.EOF after removal, got %v", err)
+	}
+}
+
+func TestGetFactoryAfterRemove(t *testing.T) {
+	// GetFactory reports the factory for a doppelganger. A detached reader is
+	// no longer attached to anything the caller can usefully nest onto, so it
+	// must not hand back a live factory.
+	//
+	// This previously worked as a side effect of RemoveDoppelganger clearing
+	// DoppelBase. That field is now left intact, so the behaviour has to be
+	// preserved deliberately.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
+	defer factory.Close()
+
+	reader := factory.NewDoppelganger()
+	if doppelgangerreader.GetFactory(reader) == nil {
+		t.Fatal("expected a factory for an attached doppelganger")
+	}
+
+	if err := factory.RemoveDoppelganger(reader); err != nil {
+		t.Fatalf("RemoveDoppelganger: %v", err)
+	}
+	if got := doppelgangerreader.GetFactory(reader); got != nil {
+		t.Errorf("expected nil factory for a detached doppelganger, got %T", got)
+	}
+}
