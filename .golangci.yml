@@ -1,0 +1,119 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - dogsled
+    - dupl
+    - errcheck
+    - exhaustive
+    - funlen
+    - gochecknoinits
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - nestif
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+  settings:
+    dogsled:
+      max-blank-identifiers: 2
+    dupl:
+      threshold: 100
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    exhaustive:
+      default-signifies-exhaustive: false
+    funlen:
+      lines: 150
+      statements: 80
+    gocognit:
+      min-complexity: 30
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gocritic:
+      disabled-checks:
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - whyNoLint
+        - wrapperFunc
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 30
+    lll:
+      line-length: 140
+      tab-width: 1
+    misspell:
+      locale: US
+    nakedret:
+      max-func-lines: 30
+    nestif:
+      min-complexity: 5
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+    unparam:
+      check-exported: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - text: 'shadow: declaration of "err" shadows declaration at line \d+'
+        linters:
+          - govet
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/Eun/go-doppelgangerreader
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

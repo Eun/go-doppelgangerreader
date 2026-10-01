@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"time"
 
 	"io"
 	"log"
@@ -22,17 +22,17 @@ func ExampleDoppelgangerFactory_NewDoppelganger() {
 	d1 := factory.NewDoppelganger()
 	defer d1.Close()
 
-	fmt.Println(ioutil.ReadAll(d1))
+	fmt.Println(io.ReadAll(d1))
 
 	d2 := factory.NewDoppelganger()
 	defer d2.Close()
 
-	fmt.Println(ioutil.ReadAll(d2))
+	fmt.Println(io.ReadAll(d2))
 }
 
 func ExampleDoppelgangerFactory_NewDoppelganger_httpResponse() {
 	res := &http.Response{
-		Body: ioutil.NopCloser(bytes.NewBufferString("Hello World")),
+		Body: io.NopCloser(bytes.NewBufferString("Hello World")),
 	}
 
 	factory := doppelgangerreader.NewFactory(res.Body)
@@ -72,7 +72,7 @@ func (e errorHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	request.Body = factory.NewDoppelganger()
 	defer func() {
 		err := recover()
-		body, _ := ioutil.ReadAll(io.LimitReader(factory.NewDoppelganger(), 128))
+		body, _ := io.ReadAll(io.LimitReader(factory.NewDoppelganger(), 128))
 		log.Printf("handler panic: %#v, body was %v", err, body)
 		factory.Close()
 	}()
@@ -81,10 +81,15 @@ func (e errorHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 
 func ExampleDoppelgangerFactory_httpErrorHandler() {
 	handler := http.NewServeMux()
-	handler.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
-		_, _ = ioutil.ReadAll(request.Body)
+	handler.HandleFunc("/", func(_ http.ResponseWriter, request *http.Request) {
+		_, _ = io.ReadAll(request.Body)
 		panic("some random error")
 	})
 
-	http.ListenAndServe(":8000", errorHandler{handler})
+	srv := &http.Server{
+		Addr:              ":8000",
+		Handler:           errorHandler{handler},
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	_ = srv.ListenAndServe()
 }
