@@ -148,6 +148,12 @@ func (r *readerInstance) Read(p []byte) (n int, err error) {
 }
 
 func (r *readerInstance) Close() error {
+	// RemoveDoppelganger and a previous Close both set DoppelBase to nil, so
+	// this can be called on an already detached reader. Closing twice must be
+	// a no-op rather than a nil dereference.
+	if r.DoppelBase == nil {
+		return nil
+	}
 	// if the factory is already closed
 	// we dont need to remove
 	if r.DoppelBase.closedOn == nil {

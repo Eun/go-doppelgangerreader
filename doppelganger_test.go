@@ -556,3 +556,45 @@ func TestHTTPMiddleware(t *testing.T) {
 		t.Fatalf("expected %v, but got %v", []byte{'O', 'K'}, body)
 	}
 }
+
+func TestReaderInstanceCloseIsIdempotent(t *testing.T) {
+	// Closing a doppelganger twice must not panic. RemoveDoppelganger and a
+	// first Close both detach the reader from its factory, and Close used to
+	// dereference that pointer unconditionally.
+	//
+	// The factory is deliberately left open (the source is never read to EOF),
+	// because a closed factory takes a different branch and hides the bug.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
+	defer factory.Close()
+
+	reader := factory.NewDoppelganger()
+	if _, err := reader.Read(make([]byte, 8)); err != nil {
+		t.Fatalf("partial read: %v", err)
+	}
+
+	if err := reader.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestReaderInstanceCloseAfterRemove(t *testing.T) {
+	// Same hazard reached the other way round: RemoveDoppelganger detaches the
+	// reader, then Close is called on it.
+	factory := doppelgangerreader.NewFactory(bytes.NewReader(make([]byte, 128)))
+	defer factory.Close()
+
+	reader := factory.NewDoppelganger()
+	if _, err := reader.Read(make([]byte, 8)); err != nil {
+		t.Fatalf("partial read: %v", err)
+	}
+
+	if err := factory.RemoveDoppelganger(reader); err != nil {
+		t.Fatalf("RemoveDoppelganger: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close after RemoveDoppelganger: %v", err)
+	}
+}
